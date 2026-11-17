@@ -113,13 +113,67 @@ SCHEMA = (
         decided_at TEXT NOT NULL,
         PRIMARY KEY (run_id, pair_id)
     )""",
+    # ---- M8 付款批次 ----
+    """CREATE TABLE IF NOT EXISTS payment_batches (
+        batch_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        input_sha256 TEXT NOT NULL,
+        rule_version TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        params_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        counts_json TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS payment_lines (
+        run_id TEXT NOT NULL,
+        batch_id TEXT NOT NULL,
+        line_key TEXT NOT NULL,
+        src_line_no INTEGER NOT NULL,
+        supplier_id TEXT NOT NULL,
+        supplier_name TEXT NOT NULL DEFAULT '',
+        doc_no TEXT NOT NULL DEFAULT '',
+        line_type TEXT NOT NULL,
+        amount TEXT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'CNY',
+        remark TEXT NOT NULL DEFAULT '',
+        cluster_id TEXT NOT NULL DEFAULT '',
+        matched_name TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        block_code TEXT NOT NULL DEFAULT '',
+        block_detail TEXT NOT NULL DEFAULT '',
+        warning_code TEXT NOT NULL DEFAULT '',
+        writeoff_version INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, line_key)
+    )""",
+    """CREATE TABLE IF NOT EXISTS payment_writeoffs (
+        run_id TEXT NOT NULL,
+        line_key TEXT NOT NULL,
+        action TEXT NOT NULL,
+        expected_version INTEGER NOT NULL,
+        version INTEGER NOT NULL,
+        operator TEXT NOT NULL,
+        decided_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, line_key)
+    )""",
+    """CREATE TABLE IF NOT EXISTS payment_quarantine (
+        run_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        source_file TEXT NOT NULL,
+        line_no INTEGER NOT NULL,
+        raw_line TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT ''
+    )""",
     "CREATE INDEX IF NOT EXISTS idx_records_run ON records(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_quarantine_run ON quarantine(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_pairs_run ON pair_scores(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pay_lines_run ON payment_lines(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pay_lines_cluster ON payment_lines(run_id, cluster_id)",
 )
 
 TABLES = ("runs", "records", "quarantine", "conflicts", "blocks", "block_pairs",
-          "pair_scores", "clusters", "cluster_members", "decisions")
+          "pair_scores", "clusters", "cluster_members", "decisions",
+          "payment_batches", "payment_lines", "payment_writeoffs", "payment_quarantine")
 
 
 def db_path() -> Path:
@@ -413,3 +467,134 @@ def count(run_id: str, table: str) -> int:
     with connect() as conn:
         row = conn.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE run_id = ?", (run_id,)).fetchone()
         return int(row["n"])
+
+
+# ---- M8 付款批次 ----
+
+def save_payment_batch(batch: dict) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO payment_batches (batch_id, run_id, input_sha256,"
+            " rule_version, source_file, params_json, created_at, counts_json)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (batch["batch_id"], batch["run_id"], batch["input_sha256"],
+             batch["rule_version"], batch["source_file"], batch["params_json"],
+             batch["created_at"], batch["counts_json"]),
+        )
+        conn.commit()
+
+
+def get_payment_batch(batch_id: str):
+    with connect() as conn:
+        return _one(conn, "SELECT * FROM payment_batches WHERE batch_id = ?", (batch_id,))
+
+
+def latest_payment_batch(run_id: str = ""):
+    with connect() as conn:
+        if run_id:
+            return _one(conn, "SELECT * FROM payment_batches WHERE run_id = ?"
+                              " ORDER BY created_at DESC, batch_id DESC LIMIT 1", (run_id,))
+        return _one(conn, "SELECT * FROM payment_batches"
+                          " ORDER BY created_at DESC, batch_id DESC LIMIT 1")
+
+
+def list_payment_batches(run_id: str = "") -> list:
+    with connect() as conn:
+        if run_id:
+            return _rows(conn, "SELECT * FROM payment_batches WHERE run_id = ?"
+                               " ORDER BY created_at DESC, batch_id DESC", (run_id,))
+        return _rows(conn, "SELECT * FROM payment_batches"
+                           " ORDER BY created_at DESC, batch_id DESC")
+
+
+def replace_payment_lines(run_id: str, batch_id: str, lines) -> None:
+    """整批替换付款行；核销决定表不动，保证重跑不改变已确认归属。"""
+    with connect() as conn:
+        conn.execute("DELETE FROM payment_lines WHERE run_id = ?", (run_id,))
+        conn.executemany(
+            "INSERT INTO payment_lines (run_id, batch_id, line_key, src_line_no, supplier_id,"
+            " supplier_name, doc_no, line_type, amount, currency, remark, cluster_id,"
+            " matched_name, status, block_code, block_detail, warning_code, writeoff_version)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(run_id, batch_id, line["line_key"], line["src_line_no"], line["supplier_id"],
+              line.get("supplier_name", ""), line.get("doc_no", ""), line["line_type"],
+              str(line["amount"]), line.get("currency", "CNY"), line.get("remark", ""),
+              line.get("cluster_id", ""), line.get("matched_name", ""), line["status"],
+              line.get("block_code", ""), line.get("block_detail", ""),
+              line.get("warning_code", ""), line.get("writeoff_version", 0))
+             for line in lines],
+        )
+        conn.commit()
+
+
+def list_payment_lines(run_id: str, status: str = "", line_type: str = "") -> list:
+    sql = "SELECT * FROM payment_lines WHERE run_id = ?"
+    params = [run_id]
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if line_type:
+        sql += " AND line_type = ?"
+        params.append(line_type)
+    sql += " ORDER BY src_line_no, line_key"
+    with connect() as conn:
+        return _rows(conn, sql, tuple(params))
+
+
+def get_payment_line(run_id: str, line_key: str):
+    with connect() as conn:
+        return _one(conn, "SELECT * FROM payment_lines WHERE run_id = ? AND line_key = ?",
+                    (run_id, line_key))
+
+
+def update_payment_line_state(run_id: str, line_key: str, status: str,
+                              block_code: str, block_detail: str, version: int) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE payment_lines SET status = ?, block_code = ?, block_detail = ?,"
+            " writeoff_version = ? WHERE run_id = ? AND line_key = ?",
+            (status, block_code, block_detail, version, run_id, line_key),
+        )
+        conn.commit()
+
+
+def get_writeoff(run_id: str, line_key: str):
+    with connect() as conn:
+        return _one(conn, "SELECT * FROM payment_writeoffs WHERE run_id = ? AND line_key = ?",
+                    (run_id, line_key))
+
+
+def save_writeoff(decision: dict) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO payment_writeoffs (run_id, line_key, action,"
+            " expected_version, version, operator, decided_at) VALUES (?,?,?,?,?,?,?)",
+            (decision["run_id"], decision["line_key"], decision["action"],
+             decision["expected_version"], decision["version"], decision["operator"],
+             decision["decided_at"]),
+        )
+        conn.commit()
+
+
+def list_writeoffs(run_id: str) -> list:
+    with connect() as conn:
+        return _rows(conn, "SELECT * FROM payment_writeoffs WHERE run_id = ?"
+                           " ORDER BY decided_at DESC, line_key", (run_id,))
+
+
+def replace_payment_quarantine(run_id: str, rows) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM payment_quarantine WHERE run_id = ?", (run_id,))
+        conn.executemany(
+            "INSERT INTO payment_quarantine (run_id, seq, source_file, line_no, raw_line,"
+            " reason_code, detail) VALUES (?,?,?,?,?,?,?)",
+            [(run_id, i, r["source_file"], r["line_no"], r["raw_line"], r["reason_code"],
+              r.get("detail", "")) for i, r in enumerate(rows, 1)],
+        )
+        conn.commit()
+
+
+def list_payment_quarantine(run_id: str) -> list:
+    with connect() as conn:
+        return _rows(conn, "SELECT * FROM payment_quarantine WHERE run_id = ? ORDER BY seq",
+                     (run_id,))

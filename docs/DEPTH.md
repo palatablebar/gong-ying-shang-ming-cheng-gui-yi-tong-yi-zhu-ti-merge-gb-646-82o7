@@ -1,10 +1,12 @@
 # 深度登记 供应商主数据台账（gb-646 entitymerge）
 
-- 规模：中型（7 个功能模块，78 个文件，81 条测试）
+- 规模：中型（8 个功能模块，90 个文件，110 条测试）
 - 核心规则：名称归一后按 2-gram 分块，相似度 = 0.55 × bigram Dice + 0.45 × 编辑比率；
-  税号不同为硬冲突禁止合并，税号相同强制合并；并查集合并，代表元取税号最小者
+  税号不同为硬冲突禁止合并，税号相同强制合并；并查集合并，代表元取税号最小者；
+  付款抵扣按供应商号锁回本主体簇，待核不抵减、核销后同主体统一抵减
 - 使用者与工作流：集团采购中心主数据岗，每月收 6 个 ERP 导出的供应商名录，
-  逐份采信、看隔离、判定候选对、生成合并簇、人工复核边界对、导出主数据与证据
+  逐份采信、看隔离、判定候选对、生成合并簇、人工复核边界对、导出主数据与证据；
+  付款岗再导入付款批次，逐笔核销退款抵扣，按可付净额安排付款
 
 ## 功能模块
 
@@ -17,6 +19,7 @@
 | M5 等价类合并 | 生成合并簇，核对代表元与金额 | POST /api/clusters | `app/modules/m5_clusters/unionfind.py` `app/modules/m5_clusters/represent.py` `app/modules/m5_clusters/allocate.py` `app/modules/m5_clusters/service.py` `app/modules/m5_clusters/handler.py` | `tests/test_clusters.py` |
 | M6 复核批次 | 判定边界对，看引用异常与批次历史 | POST /api/reviews/{pair_id}/decision | `app/modules/m6_reviews/queue.py` `app/modules/m6_reviews/history.py` `app/modules/m6_reviews/version.py` `app/modules/m6_reviews/service.py` `app/modules/m6_reviews/handler.py` | `tests/test_reviews.py` |
 | M7 主数据导出 | 下载主数据、成员分摊、隔离区与运行清单 | GET /api/export/master.csv | `app/modules/m7_export/master_out.py` `app/modules/m7_export/quarantine_out.py` `app/modules/m7_export/manifest_out.py` `app/modules/m7_export/service.py` `app/modules/m7_export/handler.py` | `tests/test_export.py` |
+| M8 付款批次 | 导入付款批次、核销抵扣、看可付净额与阻断 | POST /api/payments/import | `app/modules/m8_payments/pcolumns.py` `app/modules/m8_payments/matching.py` `app/modules/m8_payments/writeoff.py` `app/modules/m8_payments/payment_out.py` `app/modules/m8_payments/service.py` `app/modules/m8_payments/handler.py` | `tests/test_payments.py` `tests/test_payment_api.py` |
 
 ## 陷阱登记
 
@@ -35,6 +38,11 @@
 | TRAP-22 | 同一主体多个别名 | 合并顺序不同得到不同簇 | 并查集根取字典序较小者，代表元规则固定 | `app/modules/m5_clusters/unionfind.py` `app/modules/m5_clusters/represent.py` | `tests/test_clusters.py::test_merge_order_independent` |
 | TRAP-24 | 簇金额按比例分摊到成员 | 各自四舍五入后合计不等 | 最大余额法分到 0.01，同分按供应商号 | `app/modules/m5_clusters/allocate.py` | `tests/test_clusters.py::test_share_largest_remainder` |
 | TRAP-26 | 复核决定被旧页面重复提交 | 后提交无条件覆盖新决定 | 版本乐观锁，expected_version 不符即 409 | `app/modules/m6_reviews/version.py` | `tests/test_reviews.py::test_stale_decision_rejected` |
+| TRAP-27 | 负数退款行并进同名主体 | 整簇金额被直接冲低，已确认供应商无法按净额付款 | 抵扣导入即 pending 不进净额，核销后才在本主体簇内统一抵减 | `app/modules/m8_payments/service.py` | `tests/test_payments.py::test_pending_deduction_not_in_net` |
+| TRAP-28 | 抵扣挂到同名的别的主体 | 跨主体冲减，对账失真 | 按供应商号锁回记录所在簇，主数据无此号即隔离 W_SUPPLIER_UNKNOWN | `app/modules/m8_payments/matching.py` | `tests/test_payments.py::test_unknown_supplier_never_enters_cluster` |
+| TRAP-29 | 同批付款文件重跑 | 抵扣重复计入，或已确认归属被重置 | 行键为内容指纹，核销决定独立存储，重跑按键接回不改状态 | `app/modules/m8_payments/pcolumns.py` `app/modules/m8_payments/writeoff.py` | `tests/test_payments.py::test_rerun_keeps_confirmed_attribution` |
+| TRAP-30 | 税号冲突簇上核销抵扣 | 在身份未定主体上抵减 | 阻断行 approve 被领域错误拦截，只能先解阻或驳回 | `app/modules/m8_payments/writeoff.py` | `tests/test_payments.py::test_conflict_cluster_deduction_blocked` |
+| TRAP-31 | 页面、主数据、导出净额各算各的 | 三处净额对不上 | 净额只由 reconcile/cluster_payment 同源计算，主数据导出追加同口径净额列 | `app/modules/m8_payments/service.py` `app/modules/m7_export/master_out.py` | `tests/test_payments.py::test_master_data_net_matches_payment_ledger` |
 
 ## 对账规则
 
@@ -42,6 +50,8 @@
 - 金额：Σ采纳记录金额 = Σ簇金额 = Σ成员分摊，全部 Decimal 逐分相等
 - 候选对：候选总数 = 自动 + 复核 + 拒绝；复核决定写入后簇与金额立即重算
 - 空态：仅表头 / 全空行 / 正常文件三种结论分别记录在文件诊断里
+- 付款：输入行数 = 采纳付款行 + 付款隔离行；可付净额 = 应付 + 已核抵扣，
+  未核/阻断/驳回抵扣不进净额；行级合计 = 簇级合计，页面/主数据/导出三处相等
 
 ## 已知不覆盖
 

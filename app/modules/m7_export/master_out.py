@@ -7,6 +7,8 @@ from decimal import Decimal
 
 HEADER = ("主体编号", "代表供应商号", "代表名称", "税号", "城市", "成员数",
           "本年累计(元)", "簇状态", "成员供应商号", "簇内税号")
+# 接入付款批次（M8）后追加的净额列；无付款数据时不输出，保持主数据原表头契约。
+PAYMENT_HEADER = ("未核抵扣(元)", "可付净额(元)", "付款阻断原因")
 
 
 def _status(cluster) -> str:
@@ -18,16 +20,16 @@ def _cluster_taxes(cluster_id, by_cluster, records) -> list:
     return sorted(tax for tax in taxes if tax)
 
 
-def render(clusters, members, records) -> str:
+def render(clusters, members, records, payment_by_cluster=None) -> str:
     by_cluster = {}
     for member in members:
         by_cluster.setdefault(member["cluster_id"], []).append(member["supplier_id"])
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(HEADER)
+    writer.writerow(HEADER + (PAYMENT_HEADER if payment_by_cluster is not None else ()))
     for cluster in clusters:
         rep = records.get(cluster["rep_id"], {})
-        writer.writerow([
+        row = [
             cluster["cluster_id"],
             cluster["rep_id"],
             rep.get("raw_name", ""),
@@ -38,7 +40,18 @@ def render(clusters, members, records) -> str:
             _status(cluster),
             " ".join(sorted(by_cluster.get(cluster["cluster_id"], []))),
             ",".join(_cluster_taxes(cluster["cluster_id"], by_cluster, records)),
-        ])
+        ]
+        if payment_by_cluster is not None:
+            pay = payment_by_cluster.get(cluster["cluster_id"])
+            if pay is None:
+                row.extend(["0.00", "0.00", ""])
+            else:
+                row.extend([
+                    f"{Decimal(str(pay['pending_deduction'])):.2f}",
+                    f"{Decimal(str(pay['net_payable'])):.2f}",
+                    pay.get("block_reason", ""),
+                ])
+        writer.writerow(row)
     return buffer.getvalue()
 
 

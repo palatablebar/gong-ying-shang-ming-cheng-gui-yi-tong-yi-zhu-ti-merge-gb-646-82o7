@@ -1,7 +1,8 @@
 # 供应商主数据台账（entitymerge）
 
 集团采购中心把 6 个 ERP 导出的供应商名录并成一份主数据：名称归一、候选对判定、
-合并同主体、人工复核边界对、导出主数据与证据行。界面为原生 HTML/CSS/JS，
+合并同主体、人工复核边界对、导出主数据与证据行；并把付款批次（应付与退款抵扣）
+锁回主数据主体，逐笔核销抵扣后给出可付净额。界面为原生 HTML/CSS/JS，
 单体 FastAPI + Jinja2 + SQLite，一条 `docker compose up` 即可演示。
 
 ## 能力
@@ -15,7 +16,9 @@
 - 合并簇：并查集合并，代表元取税号最小者，簇内税号冲突标记交复核，
   簇金额与成员分摊用 Decimal 逐分守恒。
 - 复核：队列按得分降序，决定带版本乐观锁，写入后簇立即重算；引用异常四类可查。
-- 导出：主数据、成员分摊、隔离区、冲突、运行清单（含 `run_id` 与输入 sha256）。
+- 付款批次：应付行与退款抵扣行采信、隔离归因、抵扣按供应商号锁回本主体簇、
+  待核不抵减、核销后同主体统一抵减，版本乐观锁，净额三处口径一致。
+- 导出：主数据（含付款净额列）、成员分摊、隔离区、冲突、运行清单（含 `run_id` 与输入 sha256）。
 
 ## 模块清单
 
@@ -28,11 +31,12 @@
 | M5 等价类合并 | `POST /api/clusters` | 并查集、代表元、最大余额分摊 |
 | M6 复核批次 | `POST /api/reviews/{pair_id}/decision` | 队列、版本锁、引用一致性 |
 | M7 主数据导出 | `GET /api/export/master.csv` | CSV 与运行清单，UTF-8 BOM |
+| M8 付款批次 | `POST /api/payments/import` | 抵扣锁主体、待核不抵减、核销净额 |
 
 ## 页面
 
 `/` 台账总览（含采信诊断与隔离区）、`/normalize` 名称归一、`/pairs` 候选对、
-`/clusters` 合并簇、`/reviews` 复核队列、`/export` 主数据导出。
+`/clusters` 合并簇、`/reviews` 复核队列、`/payments` 付款复核、`/export` 主数据导出。
 接口文档在 `/docs`。
 
 ## 核心规则
@@ -42,6 +46,10 @@
 3. 判定优先级：税号冲突（拒绝） > 税号相同（自动） > 城市不同（复核） > 得分分档。
 4. 代表元 = 簇内税号最小者；无税号取供应商号最小者。
 5. 簇金额 = Σ成员金额（Decimal）；成员分摊按比例取整到分后最大余额补齐。
+6. 抵扣归属：退款抵扣按供应商号锁回其记录所在的主体簇，匹配不上即隔离，
+   未核抵扣永远不会减到别的主体。
+7. 可付净额 = 应付合计 + 已核销抵扣；待核/阻断/驳回抵扣不进净额，只在未核列披露。
+8. 付款行键为内容指纹，同批重跑批次号与行键不变，核销决定独立存储、不重复计入。
 
 字段类型、单位、空值与哨兵、时间与区间定义见 `docs/DATA-DICTIONARY.md`；
 陷阱清单与对账规则见 `docs/DEPTH.md`；运维动作见 `docs/RUNBOOK.md`。
@@ -65,7 +73,8 @@ docker compose exec -T app python -m pytest -q
 4. `/pairs`：按结论过滤候选对，看得分与依据字段。
 5. `/clusters`：合并簇与成员分摊，`C-0009` 标税号冲突。
 6. `/reviews`：三项带复核，判定后簇数立即变化；引用异常五条。
-7. `/export`：下载主数据、成员分摊、隔离区、冲突与运行清单。
+7. `/payments`：待核抵扣逐笔核销，看未核抵扣、可付净额与阻断原因；7 行进付款隔离区。
+8. `/export`：下载主数据（含净额列）、成员分摊、隔离区、冲突与运行清单。
 
 ## 测试
 
@@ -73,16 +82,17 @@ docker compose exec -T app python -m pytest -q
 docker compose exec -T app python -m pytest -q
 ```
 
-81 条测试：每个模块 8 到 13 条，另有端到端 4 条与不变量 5 条。
+110 条测试：M1–M7 每个模块 8 到 13 条，M8 付款 27 条，另有端到端 4 条与不变量 5 条。
 
 ## 目录
 
 ```text
 app/main.py config.py errors.py reasons.py manifest.py store.py web.py
 app/modules/m1_intake … m7_export/{handler.py service.py 规则与读写出}
-app/templates/{base.html + 6 页}
+app/modules/m8_payments/{handler.py service.py pcolumns.py matching.py writeoff.py payment_out.py}
+app/templates/{base.html + 7 页}
 app/static/{theme.css layout.css components.css app.js table.js charts.js}
 docs/{DEPTH.md DATA-DICTIONARY.md RUNBOOK.md}
-sample_data/ 六个脏样例
-tests/{conftest.py test_intake … test_export.py test_e2e.py test_invariants.py fixtures/}
+sample_data/ 六个名录脏样例 + 一个付款批次样例
+tests/{conftest.py test_intake … test_payments.py test_e2e.py test_invariants.py fixtures/}
 ```

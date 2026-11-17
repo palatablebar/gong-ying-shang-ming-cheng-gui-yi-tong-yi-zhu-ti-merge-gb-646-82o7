@@ -20,6 +20,7 @@ from .modules.m3_blocks import service as block_service
 from .modules.m4_pairs import service as pair_service
 from .modules.m5_clusters import service as cluster_service
 from .modules.m6_reviews import service as review_service
+from .modules.m8_payments import service as payment_service
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
@@ -30,6 +31,7 @@ NAV = (
     ("pairs", "候选对", "/pairs"),
     ("clusters", "合并簇", "/clusters"),
     ("reviews", "复核", "/reviews"),
+    ("payments", "付款", "/payments"),
     ("export", "导出", "/export"),
 )
 
@@ -220,6 +222,23 @@ def page_reviews(request: Request):
         "runs": run_briefs(8),
     })
     return render(request, "reviews.html", context)
+
+
+@router.get("/payments", response_class=HTMLResponse)
+def page_payments(request: Request):
+    run = current_run()
+    run_id = run["run_id"]
+    payment_service.ensure_payment(run_id)
+    context = base_context(request, "payments", "付款复核", run)
+    context.update({
+        "summary": payment_service.summary(run_id),
+        "reconcile": payment_service.reconcile(run_id),
+        "pending": payment_service.pending_deductions(run_id),
+        "cluster_rows": payment_service.cluster_payment(run_id),
+        "lines": payment_service.list_lines(run_id)[:200],
+        "quarantine": store.list_payment_quarantine(run_id)[:50],
+    })
+    return render(request, "payments.html", context)
 
 
 @router.get("/export", response_class=HTMLResponse)

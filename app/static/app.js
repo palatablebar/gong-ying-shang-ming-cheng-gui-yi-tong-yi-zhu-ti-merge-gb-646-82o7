@@ -66,7 +66,24 @@
           return postJson('/api/suppliers/import', { force: true })
             .then(function () { window.location.reload(); });
         }
+        if (name === 'reimport-payments') {
+          return postJson('/api/payments/import', { force: true })
+            .then(function () { window.location.reload(); });
+        }
         return Promise.resolve();
+      });
+      return;
+    }
+
+    var writeoff = event.target.closest('[data-writeoff]');
+    if (writeoff) {
+      var lineKey = writeoff.getAttribute('data-line');
+      var payVersion = parseInt(writeoff.getAttribute('data-version'), 10);
+      run(writeoff, function () {
+        return postJson('/api/payments/' + encodeURIComponent(lineKey) + '/writeoff', {
+          action: writeoff.getAttribute('data-writeoff'),
+          expected_version: payVersion
+        }).then(function () { window.location.reload(); });
       });
       return;
     }

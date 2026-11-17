@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="panel">
+  <div class="panel-head">
+    <h1 class="panel-title">付款复核</h1>
+    <div class="panel-num">批次 {{ summary.batch_id }} · 应付 {{ summary.payable_total|money }} · 可付净额 {{ summary.net_payable|money }} 元</div>
+    <button type="button" class="btn" data-action="reimport-payments">重新导入付款批次</button>
+  </div>
+  <div class="grid-two">
+    <table class="tbl tbl-tight">
+      <thead><tr><th>金额口径</th><th class="num">金额(元)</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>应付合计</td><td class="num">{{ summary.payable_total|money }}</td><td>全部应付行</td></tr>
+        <tr><td>已核抵扣</td><td class="num">{{ summary.approved_deduction|money }}</td><td>已核销，参与抵减</td></tr>
+        <tr><td>未核抵扣</td><td class="num">{{ summary.pending_deduction|money }}</td><td>待核/阻断，<strong>不进净额</strong></td></tr>
+        <tr><td class="strong">可付净额</td><td class="num strong">{{ summary.net_payable|money }}</td><td>应付 + 已核抵扣</td></tr>
+      </tbody>
+    </table>
+    <table class="tbl tbl-tight">
+      <thead><tr><th>对账项</th><th class="num">左</th><th class="num">右</th><th>结论</th></tr></thead>
+      <tbody>
+        {% for check in reconcile.checks %}
+        <tr>
+          <td>{{ check.name }}</td>
+          <td class="num">{{ check.left }}</td>
+          <td class="num">{{ check.right }}</td>
+          <td><span class="tag {{ 'tag-ok' if check.ok else 'tag-bad' }}">{{ '通过' if check.ok else '异常' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="btn-row">
+    <a class="btn" href="/api/payments/export/clusters.csv" download>主体净额 CSV</a>
+    <a class="btn" href="/api/payments/export/lines.csv" download>付款行 CSV</a>
+    <a class="btn btn-ghost" href="/api/payments/export/quarantine.csv" download>付款隔离 CSV</a>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">待核抵扣（未核不抵减）</h2>
+    <div class="panel-num">{{ pending|length }} 笔 · 抵扣只能在本主体内核销</div>
+  </div>
+  {% if pending %}
+  <table class="tbl">
+    <thead><tr><th>行键</th><th class="num">行号</th><th>供应商</th><th>主体</th><th class="num">抵扣(元)</th><th>状态</th><th>阻断原因</th><th class="num">版本</th><th>核销</th></tr></thead>
+    <tbody>
+      {% for item in pending %}
+      <tr>
+        <td class="mono clip" title="{{ item.line_key }}">{{ item.line_key[:14] }}</td>
+        <td class="num">{{ item.src_line_no }}</td>
+        <td class="clip" title="{{ item.matched_name }}">{{ item.supplier_id }} {{ item.matched_name }}</td>
+        <td class="mono">{{ item.cluster_id }}</td>
+        <td class="num strong">{{ item.amount|money }}</td>
+        <td>{% if item.status == 'blocked' %}<span class="tag tag-bad">阻断</span>{% else %}<span class="tag tag-warn">待核</span>{% endif %}</td>
+        <td><span class="mono">{{ item.block_code }}</span> {{ item.block_detail }}</td>
+        <td class="num">{{ item.writeoff_version }}</td>
+        <td class="btn-cell">
+          <button type="button" class="btn btn-sm" data-writeoff="approve" data-line="{{ item.line_key }}" data-version="{{ item.writeoff_version }}" {{ 'disabled' if item.status == 'blocked' else '' }}>核销抵减</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-writeoff="reject" data-line="{{ item.line_key }}" data-version="{{ item.writeoff_version }}">驳回</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">没有待核抵扣。</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">主体可付净额</h2>
+    <div class="panel-num">阻断主体 {{ summary.blocked_clusters }} 个</div>
+  </div>
+  <table class="tbl tbl-tight">
+    <thead><tr><th>主体</th><th>代表</th><th class="num">应付(元)</th><th class="num">已核抵扣(元)</th><th class="num">未核抵扣(元)</th><th class="num">驳回(元)</th><th class="num">可付净额(元)</th><th>状态</th><th>阻断原因</th></tr></thead>
+    <tbody>
+      {% for c in cluster_rows %}
+      {% if c.payable_total != 0 or c.approved_deduction != 0 or c.pending_deduction != 0 or c.rejected_deduction != 0 %}
+      <tr>
+        <td class="mono">{{ c.cluster_id }}</td>
+        <td class="mono">{{ c.rep_id }}</td>
+        <td class="num">{{ c.payable_total|money }}</td>
+        <td class="num">{{ c.approved_deduction|money }}</td>
+        <td class="num">{{ c.pending_deduction|money }}</td>
+        <td class="num">{{ c.rejected_deduction|money }}</td>
+        <td class="num strong">{{ c.net_payable|money }}</td>
+        <td>
+          {% if c.payment_blocked %}<span class="tag tag-bad">净额为负</span>
+          {% elif c.block_reason %}<span class="tag tag-warn">阻断</span>
+          {% else %}<span class="tag tag-ok">可付</span>{% endif %}
+          {% for w in c.warning_codes %}<span class="tag tag-warn" title="名称预警">{{ reasons.get(w) }}</span>{% endfor %}
+        </td>
+        <td class="mono clip" title="{{ c.block_reason }}">{{ c.block_reason or '—' }}</td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">付款行明细</h2>
+    <div class="panel-num">{{ lines|length }} 行</div>
+  </div>
+  <table class="tbl tbl-dense">
+    <thead><tr><th class="num">行号</th><th>供应商</th><th>主体</th><th>类型</th><th class="num">金额(元)</th><th>状态</th><th>原因/预警</th></tr></thead>
+    <tbody>
+      {% for item in lines %}
+      <tr>
+        <td class="num">{{ item.src_line_no }}</td>
+        <td class="clip" title="{{ item.matched_name }}">{{ item.supplier_id }} {{ item.matched_name }}</td>
+        <td class="mono">{{ item.cluster_id }}</td>
+        <td>{{ '退款抵扣' if item.line_type == 'deduction' else '应付' }}</td>
+        <td class="num">{{ item.amount|money }}</td>
+        <td>{{ {'payable':'应付','pending':'待核','approved':'已核','rejected':'已驳回','blocked':'阻断'}.get(item.status, item.status) }}</td>
+        <td class="mono">{% if item.block_code %}{{ item.block_code }}{% elif item.warning_code %}{{ item.warning_code }}{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">付款隔离区</h2>
+    <div class="panel-num">{{ quarantine|length }} 行 · 不进入主数据与净额</div>
+  </div>
+  <table class="tbl tbl-tight">
+    <thead><tr><th>文件</th><th class="num">行号</th><th class="mono">原因码</th><th>原因</th><th>详情</th></tr></thead>
+    <tbody>
+      {% for q in quarantine %}
+      <tr>
+        <td class="mono">{{ q.source_file }}</td>
+        <td class="num">{{ q.line_no }}</td>
+        <td class="mono">{{ q.reason_code }}</td>
+        <td>{{ reasons.get(q.reason_code) }}</td>
+        <td class="mono clip" title="{{ q.raw_line }}">{{ q.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

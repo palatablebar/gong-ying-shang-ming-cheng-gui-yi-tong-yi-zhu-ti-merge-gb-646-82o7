@@ -10,6 +10,8 @@ SAMPLE_DIR = BASE_DIR / "sample_data"
 
 APP_NAME = "供应商主数据台账"
 RULE_VERSION = "em-1.3.0"
+# 付款批次（M8）是独立于名录合并的流水线，单独取规则版本，避免改动主数据 run_id。
+PAY_RULE_VERSION = "pay-1.0.0"
 
 DB_PATH = Path(os.environ.get("MERGE_DB", str(BASE_DIR / "data" / "merge.db")))
 
@@ -24,6 +26,49 @@ SAMPLE_FILES = (
 )
 
 ENCODING_CHAIN = ("utf-8-sig", "utf-8", "gb18030")
+
+# 付款批次固定文件：同一文件名 + 同一内容必然得到同一个付款批次号。
+PAYMENT_FILES = ("pay_g_batch_utf8.csv",)
+
+# 付款 CSV 列契约：字段名 -> 是否必填
+PAYMENT_COLUMNS = (
+    ("line_no_src", True),
+    ("supplier_id", True),
+    ("supplier_name", False),
+    ("doc_no", False),
+    ("line_type", False),
+    ("amount", True),
+    ("currency", False),
+    ("remark", False),
+)
+
+PAYMENT_COLUMN_ALIASES = {
+    "行号": "line_no_src",
+    "来源行号": "line_no_src",
+    "供应商号": "supplier_id",
+    "供应商编码": "supplier_id",
+    "供应商名称": "supplier_name",
+    "名称": "supplier_name",
+    "单据号": "doc_no",
+    "发票号": "doc_no",
+    "行类型": "line_type",
+    "类型": "line_type",
+    "金额": "amount",
+    "发生额": "amount",
+    "币种": "currency",
+    "备注": "remark",
+}
+
+# 行类型取值：应付（正数）与退款抵扣（负数）。
+LINE_TYPE_PAYABLE = "payable"
+LINE_TYPE_DEDUCTION = "deduction"
+PAYABLE_TYPE_TOKENS = frozenset({"应付", "应付账款", "付款", "payable", "ap"})
+DEDUCTION_TYPE_TOKENS = frozenset({"退款", "抵扣", "退款抵扣", "贷项", "deduction", "refund", "credit"})
+
+# 核销动作。
+WRITEOFF_APPROVE = "approve"
+WRITEOFF_REJECT = "reject"
+WRITEOFF_ACTIONS = (WRITEOFF_APPROVE, WRITEOFF_REJECT)
 
 # 列契约：字段名 -> (是否必填, 说明单位)
 COLUMNS = (

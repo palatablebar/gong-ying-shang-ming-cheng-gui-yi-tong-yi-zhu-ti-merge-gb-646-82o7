@@ -52,3 +52,30 @@ PAIR_REVIEW_SCORE = Decimal("0.832778")
 # 盛世文化传播与盛世文化：同税号但名称得分低，合计 22000 + 1500。
 CLUSTER_SEQUENCE_TOTAL = Decimal("23500.00")
 TAX_MATCH_CLUSTER_REP = "S-0012"
+
+# ---- M8 付款批次（由 sample_data/pay_g_batch_utf8.csv 固定）----
+# 21 个数据行：14 采纳（8 应付 + 6 抵扣），7 隔离。
+PAY_INPUT_ROWS = 21
+PAY_ACCEPTED = 14
+PAY_PAYABLE_LINES = 8
+PAY_DEDUCTION_LINES = 6
+PAY_QUARANTINED = 7
+PAY_PENDING = 5
+PAY_BLOCKED = 1
+
+# 全部抵扣均为负数；待核阶段可付净额等于应付合计。
+PAY_PAYABLE_TOTAL = Decimal("53300.00")
+# C-0001 两笔抵扣 -2000.00 与 -500.50；C-0007 一笔 -1000.00。
+PAY_CLUSTER_0001_DEDUCTION = Decimal("-2500.50")
+PAY_CLUSTER_0007_DEDUCTION = Decimal("-1000.00")
+# 税号冲突簇 C-0009 的抵扣被阻断，永远不进净额。
+PAY_CONFLICT_CLUSTER = "C-0009"
+# 名称不符的应付行（主数据"广州市南方建材有限公司"）。
+PAY_NAME_MISMATCH_SUPPLIER = "S-0005"
+# 主数据中不存在的供应商，必须隔离。
+PAY_UNKNOWN_SUPPLIER = "S-0999"
+
+PAY_QUARANTINE_CODES = {
+    "W_AMOUNT_ZERO", "W_SUPPLIER_UNKNOWN", "W_TYPE_UNKNOWN", "W_AMOUNT_INVALID",
+    "W_ROW_SHORT", "W_ROW_LONG", "W_LINE_KEY_DUP",
+}
